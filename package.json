@@ -1,0 +1,15 @@
+{
+  "name": "freightiq-agent",
+  "version": "1.0.0",
+  "description": "Agentic AI for cold-chain freight matching - Wayne Sanderson Farms case study",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
