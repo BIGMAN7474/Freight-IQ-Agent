@@ -868,7 +868,7 @@
 
     .persona-picks-top__row {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
       gap: 16px;
       align-items: stretch;
     }
@@ -2666,10 +2666,17 @@
 
     .about-dashboard.pro-dashboard__grid {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-columns: repeat(3, 1fr);
       gap: 16px 20px;
       margin-top: 8px;
       align-items: stretch;
+      width: 100%;
+    }
+
+    .pro-dashboard.pro-dashboard__grid .about-readable,
+    .pro-dashboard.pro-dashboard__grid .about-bullet-list,
+    .pro-dashboard.pro-dashboard__grid .about-dense.about-readable {
+      max-width: none;
     }
 
     @media (max-width: 1100px) {
@@ -2919,6 +2926,40 @@
       font-family: "JetBrains Mono", ui-monospace, monospace;
       font-size: 0.85rem;
     }
+
+    .faq-page {
+      max-width: none;
+    }
+
+    .faq-list {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .faq-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 16px 18px;
+      box-shadow: var(--shadow);
+    }
+
+    .faq-card h3 {
+      margin: 0 0 8px;
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: #e4e8ee;
+      letter-spacing: -0.01em;
+    }
+
+    .faq-card p {
+      margin: 0;
+      font-size: 0.82rem;
+      line-height: 1.5;
+      color: #9aa4ae;
+    }
   </style>
 </head>
 <body>
@@ -2935,6 +2976,7 @@
       <button type="button" class="app-tab" role="tab" id="tab-reliability" aria-selected="false" aria-controls="panel-outcome" data-app-tab="reliability" tabindex="-1" disabled>Reliability Tier</button>
       <button type="button" class="app-tab" role="tab" id="tab-route" aria-selected="false" aria-controls="panel-route" data-app-tab="route" tabindex="-1" disabled>Route</button>
       <button type="button" class="app-tab" role="tab" id="tab-system" aria-selected="false" aria-controls="panel-system" data-app-tab="system" tabindex="-1">System Logic &amp; Analytics</button>
+      <button type="button" class="app-tab" role="tab" id="tab-faq" aria-selected="false" aria-controls="panel-faq" data-app-tab="faq" tabindex="-1">FAQ</button>
     </div>
 
     <div id="panel-search" class="app-tabpanel" role="tabpanel" aria-labelledby="tab-search" data-tab-panel="search">
@@ -2969,6 +3011,37 @@
           <div>
             <label for="pickup">Pickup date</label>
             <input id="pickup" name="pickup" type="date" required />
+          </div>
+          <div>
+            <label for="pickup-time">Pickup time</label>
+            <input id="pickup-time" name="pickup-time" type="time" value="08:00" required />
+          </div>
+        </div>
+        <div class="row-2">
+          <div>
+            <label for="delivery">Delivery date</label>
+            <input id="delivery" name="delivery" type="date" required />
+          </div>
+          <div>
+            <label for="delivery-time">Delivery time</label>
+            <input id="delivery-time" name="delivery-time" type="time" value="14:00" required />
+          </div>
+        </div>
+        <div class="row-2">
+          <div>
+            <label for="max-results">Max Results (1-10)</label>
+            <select id="max-results" name="max-results" aria-label="Maximum number of ranked carriers to show per persona">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3" selected>3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+              <option value="7">7</option>
+              <option value="8">8</option>
+              <option value="9">9</option>
+              <option value="10">10</option>
+            </select>
           </div>
           <div>
             <label for="commodity">Commodity</label>
@@ -3025,7 +3098,7 @@
     <div id="panel-route" class="app-tabpanel hidden" role="tabpanel" aria-labelledby="tab-route" data-tab-panel="route" aria-live="polite">
       <div class="panel" style="padding:24px 28px 28px;max-width:1400px">
         <h2 style="margin:0 0 6px;font-size:1.05rem">Route command</h2>
-        <p class="sub" style="margin:0 0 20px;max-width:64ch">FreightIQ plots <strong>pickup (WSF complex)</strong>, <strong>destination (customer DC)</strong>, and the <strong>active column&rsquo;s #1</strong> carrier home base. Solid blue = main haul; dashed = deadhead. Tender turns the main haul green and runs the truck on the load leg.</p>
+        <p class="sub" style="margin:0 0 20px;max-width:64ch">FreightIQ plots <strong>pickup (WSF complex)</strong>, <strong>destination (customer DC)</strong>, and the <strong>active column&rsquo;s</strong> carrier home base (default: Balanced #1). Solid blue = main haul; <strong>white dashed</strong> = deadhead. After you <strong>tender</strong>, the map follows the <strong>awarded carrier</strong> (ranks 1&ndash;10), turns the haul green, and runs the truck on the load leg.</p>
         <div class="route-visibility" aria-label="Route map and transit stats">
           <div>
             <div class="route-map-surface" id="route-map-surface">
@@ -3039,7 +3112,7 @@
                 </div>
                 <div class="route-map-legend__row">
                   <span class="route-legend-swatch route-legend-swatch--dh"></span>
-                  <span>Deadhead (home &rarr; origin)</span>
+                  <span>Deadhead — <strong style="font-weight:600;color:#e8eaed">white dashed</strong> line (home &rarr; WSF pickup)</span>
                 </div>
                 <div class="route-legend-weather route-legend-weather--off" id="route-legend-weather" hidden>
                   <span id="route-legend-weather-ic" aria-hidden="true">⛅</span>
@@ -3128,9 +3201,9 @@
               <h2 class="about-card-h">Agentic design (FreightIQ)</h2>
               <ul class="about-bullet-list about-readable">
                 <li>Deterministic engine scores <strong>Cost</strong>, <strong>Balanced</strong>, and <strong>Reliability</strong> in parallel on the <strong>same eligible pool</strong>.</li>
-                <li><strong>Reasoning agent</strong> (Llama 3.3 70B via Groq) reads the structured matrix and writes a grounded recommendation — real LLM call, streamed live.</li>
-                <li>Backend deployed on Render (Node.js + Express); model layer is swappable to Claude or GPT with a one-line endpoint change.</li>
+                <li><strong>Reasoning agent</strong> (Claude Sonnet 4) reads the structured matrix and writes a grounded recommendation — real LLM call, streamed live.</li>
                 <li>Agent is constrained to cite specific carriers/numbers from the matrix; cannot hallucinate carriers or rates.</li>
+                <li>No re-query on persona switch; agent runs once per search.</li>
                 <li>Intended to feed a <strong>workflow / TMS</strong> handoff after human review of Top 3.</li>
               </ul>
             </div>
@@ -3225,12 +3298,36 @@
           <ul class="about-bullet-list about-bullet-list--two-col">
             <li><strong>Reliability column:</strong> excludes carriers with safety &lt;85 or fleet on-time &lt;90%.</li>
             <li><strong>Simulate weather alert:</strong> applies that same safety gate to <strong>all three</strong> result views (matched, hardened pool).</li>
-            <li><span class="about-dense--mono" style="font-size:0.68rem">Flow: equipment &rarr; (optional) gate on all tabs &rarr; parallel agents &rarr; Top 3 / Bottom 3</span></li>
+            <li><span class="about-dense--mono" style="font-size:0.68rem">Flow: equipment &rarr; (optional) gate on all tabs &rarr; parallel agents &rarr; Top N (1&ndash;10) / Bottom 3</span></li>
           </ul>
         </div>
       </div>
     </div>
-  </div>
+
+    <div id="panel-faq" class="app-tabpanel hidden" role="tabpanel" aria-labelledby="tab-faq" data-tab-panel="faq">
+      <div class="panel faq-page" aria-labelledby="faq-heading">
+        <h2 id="faq-heading">FAQ</h2>
+        <p class="sub" style="margin:0 0 8px;max-width:70ch">Quick reference for how FreightIQ scores carriers, applies gates, and simulates tendering.</p>
+        <div class="faq-list">
+          <article class="faq-card">
+            <h3>What is deadhead?</h3>
+            <p>Deadhead is the <strong>empty miles</strong> a carrier runs to reach your <strong>WSF complex</strong> (pickup) before the loaded leg. FreightIQ penalizes long repositioning moves because they add cost, time, and failure risk before the shipment ever moves.</p>
+          </article>
+          <article class="faq-card">
+            <h3>How are personas calculated?</h3>
+            <p>All personas score the <strong>same eligible pool</strong> with different weights. <strong>Money Saved (Cost optimized)</strong> pushes most of the signal into effective <strong>$/mi</strong> and light safety/on-time touches. <strong>Peace of Mind (Reliability tier)</strong> shifts heavily toward <strong>safety</strong> and <strong>fleet on-time %</strong>, with rate as a smaller slice. <strong>Balanced</strong> spreads weight across lane proof, safety, on-time, rate, claims, and deadhead—including roughly <strong>15% deadhead</strong> after normalization—so empty-mile risk shows up in the default view.</p>
+          </article>
+          <article class="faq-card">
+            <h3>What does the Weather Alert do?</h3>
+            <p><strong>Simulate Weather Alert</strong> applies the same <strong>high-reliability gate</strong> used in the Reliability column to <strong>all three</strong> persona views: carriers must meet <strong>safety &ge; 85</strong> and <strong>fleet on-time &ge; 90%</strong> before they appear in any column. That keeps Cost, Balanced, and Reliability comparable under a hardened pool when you want to stress service.</p>
+          </article>
+          <article class="faq-card">
+            <h3>How do I tender a load?</h3>
+            <p>Click <strong>Tender load</strong> on any ranked carrier card. FreightIQ runs a mock <strong>EDI 204</strong> (Motor Carrier Shipment Information) sequence: draft tender, carrier acknowledge, and completion toast. The <strong>Route</strong> tab then locks the map and animation to the <strong>awarded carrier</strong> (any rank you chose), not only the #1 row.</p>
+          </article>
+        </div>
+      </div>
+    </div>
 
   <div id="execution-panel" class="execution-panel hidden" role="status" aria-live="polite" aria-atomic="true">
     <div class="execution-panel-inner panel">
@@ -3256,6 +3353,8 @@
         <button type="button" class="btn btn-primary" id="da-how-modal-close">OK</button>
       </div>
     </div>
+  </div>
+
   </div>
 
   <script>
@@ -3550,6 +3649,7 @@
     const panelOutcome = document.getElementById("panel-outcome");
     const panelRoute = document.getElementById("panel-route");
     const panelSystem = document.getElementById("panel-system");
+    const panelFaq = document.getElementById("panel-faq");
     const cardsViewBalanced = document.getElementById("cards-view-balanced");
     const cardsViewCost = document.getElementById("cards-view-cost");
     const cardsViewRel = document.getElementById("cards-view-reliability");
@@ -3564,6 +3664,7 @@
     const tabRelEl = document.getElementById("tab-reliability");
     const tabRouteEl = document.getElementById("tab-route");
     const tabSystemEl = document.getElementById("tab-system");
+    const tabFaqEl = document.getElementById("tab-faq");
     const systemRunAnalyticsRoot = document.getElementById("system-run-analytics");
     const resultTabButtons = [tabBalancedEl, tabCostEl, tabRelEl, tabRouteEl].filter(Boolean);
     const loadingLinesEl = document.getElementById("loading-lines");
@@ -3579,6 +3680,7 @@
     const daHowModal = document.getElementById("da-how-modal");
     const daHowModalClose = document.getElementById("da-how-modal-close");
     const pickupInput = document.getElementById("pickup");
+    const deliveryInput = document.getElementById("delivery");
     let weatherAlertActive = false;
     let lastPersonaMatrix = null;
     let lastLoadSearch = null;
@@ -3602,10 +3704,15 @@
 
     function findScoredEntryForCarrierName(name) {
       if (!name || !lastPersonaMatrix) return null;
-      for (const p of ["balanced", "cost", "reliability"]) {
+      const personas = ["balanced", "cost", "reliability"];
+      const preferred = tenderedFromPersona && personas.includes(tenderedFromPersona) ? tenderedFromPersona : null;
+      const order = preferred ? [preferred, ...personas.filter((x) => x !== preferred)] : personas;
+      for (const p of order) {
         const col = lastPersonaMatrix[p];
-        if (!col || !col.top3) continue;
-        const hit = col.top3.find((e) => e.carrier && e.carrier.name === name);
+        if (!col) continue;
+        const pool = col.topFull && col.topFull.length ? col.topFull : col.top3;
+        if (!pool || !pool.length) continue;
+        const hit = pool.find((e) => e.carrier && e.carrier.name === name);
         if (hit) return { entry: hit, persona: p };
       }
       return null;
@@ -3663,10 +3770,15 @@
         tabSystemEl.setAttribute("aria-selected", name === "system" ? "true" : "false");
         tabSystemEl.setAttribute("tabindex", name === "system" ? "0" : "-1");
       }
+      if (tabFaqEl) {
+        tabFaqEl.setAttribute("aria-selected", name === "faq" ? "true" : "false");
+        tabFaqEl.setAttribute("tabindex", name === "faq" ? "0" : "-1");
+      }
       if (panelSearch) panelSearch.classList.toggle("hidden", name !== "search");
       if (panelOutcome) panelOutcome.classList.toggle("hidden", !["balanced", "cost", "reliability"].includes(name));
       if (panelRoute) panelRoute.classList.toggle("hidden", name !== "route");
       if (panelSystem) panelSystem.classList.toggle("hidden", name !== "system");
+      if (panelFaq) panelFaq.classList.toggle("hidden", name !== "faq");
       if (["balanced", "cost", "reliability"].includes(name)) {
         updatePersonaViewVisibility(name);
         activePersonaKey = name;
@@ -4189,7 +4301,7 @@
       }
       if (stStrap) {
         stStrap.textContent = lastPersonaMatrix
-          ? "Deadhead follows the selected map carrier (default: Balanced #1; after you tender, the awarded carrier). Main haul: solid + glow; tendered = success green."
+          ? "Deadhead follows the map carrier (default: Balanced #1; after tender, the awarded carrier at any rank). Main haul: solid + glow; deadhead: white dashed; tendered haul = green."
           : "Scoring not available for this run (e.g. equipment), but the lane and fuel model are still plotted.";
       }
       if (stCar) {
@@ -4260,10 +4372,11 @@
       return { carrier: c, total: 0, laneHit, laneHist, effectiveRate: effRate, effectiveOnTime: effOT, deadheadMiles: 0, deadheadScore: 1 };
     }
 
-    function computeTop3Bottom3(ordered) {
+    function computeTop3Bottom3(ordered, maxTop) {
+      const cap = maxTop == null ? 3 : Math.max(1, Math.min(10, parseInt(String(maxTop), 10) || 3));
       const n = ordered.length;
       if (n === 0) return { top3: [], bottom3: [] };
-      const top3 = ordered.slice(0, Math.min(3, n));
+      const top3 = ordered.slice(0, Math.min(cap, n));
       const topDots = new Set(top3.map((e) => e.carrier.dotNumber));
       const bottom3 = [];
       for (let i = n - 1; i >= 0 && bottom3.length < 3; i--) {
@@ -4274,7 +4387,17 @@
     }
 
     function scoreCarriers(load) {
-      const { equipment, originState, destState, persona, weatherAlertActive = false, origin = "", destination = "" } = load;
+      const {
+        equipment,
+        originState,
+        destState,
+        persona,
+        weatherAlertActive = false,
+        origin = "",
+        destination = "",
+        maxResults: maxResultsRaw = 3,
+      } = load;
+      const maxResults = Math.max(1, Math.min(10, parseInt(String(maxResultsRaw), 10) || 3));
       const originLabel = (origin && String(origin).trim()) || "";
       const destLabel = (destination && String(destination).trim()) || "";
       const priorityLabel = AGENT_PRIORITY_LABELS[persona] || AGENT_PRIORITY_LABELS.balanced;
@@ -4282,9 +4405,11 @@
       const base = {
         persona,
         priorityLabel,
+        maxResults,
         top3: [],
         bottom3: [],
         top: [],
+        topFull: [],
         benchmarkRate: 0,
         fleetAvgSafety: 0,
         laneLabel: lane || "—",
@@ -4360,7 +4485,7 @@
             if (a.effectiveRate !== b.effectiveRate) return a.effectiveRate - b.effectiveRate;
             return a.carrier.name.localeCompare(b.carrier.name);
           });
-        const { top3, bottom3 } = computeTop3Bottom3(byRate);
+        const { top3, bottom3 } = computeTop3Bottom3(byRate, maxResults);
         for (let i = 0; i < top3.length; i++) {
           top3[i] = { ...top3[i], total: 100 - i * 2 };
         }
@@ -4368,7 +4493,8 @@
           ...base,
           top3,
           bottom3,
-          top: byRate,
+          top: byRate.slice(0, maxResults),
+          topFull: byRate,
           benchmarkRate,
           fleetAvgSafety,
           reliabilityGateApplied,
@@ -4404,12 +4530,13 @@
           if (bc !== ac) return bc - ac;
           return a.carrier.name.localeCompare(b.carrier.name);
         });
-      const { top3, bottom3 } = computeTop3Bottom3(scored);
+      const { top3, bottom3 } = computeTop3Bottom3(scored, maxResults);
       return {
         ...base,
         top3,
         bottom3,
-        top: scored,
+        top: scored.slice(0, maxResults),
+        topFull: scored,
         benchmarkRate,
         fleetAvgSafety,
         reliabilityGateApplied,
@@ -4752,7 +4879,8 @@
           continue;
         }
         const t1 = col.top3[0];
-        const rates = col.top && col.top.length ? col.top.map((x) => x.effectiveRate) : [t1.effectiveRate];
+        const pool = col.topFull && col.topFull.length ? col.topFull : col.top;
+        const rates = pool && pool.length ? pool.map((x) => x.effectiveRate) : [t1.effectiveRate];
         const minR = Math.min(...rates);
         const maxR = Math.max(...rates);
         const span = maxR - minR || 1e-6;
@@ -4886,8 +5014,10 @@
       }
       const topHtml = col.top3.map((e, i) => matrixTopPickCard(e, col, i, key)).join("");
       const riskTable = buildRiskTableHTML(col);
+      const nTop = col.top3.length;
+      const topLabel = nTop === 1 ? "Top selection" : "Top " + nTop + " selections";
       const balHint =
-        '<p class="persona-surface-hint">Each view uses a parallel scoring run on the same pool. <strong>Tender load</strong> is on every <strong>Top 3</strong> card. Switch via <strong>Cost Optimized</strong> and <strong>Reliability Tier</strong> in the top navigation (no re-query).</p>';
+        '<p class="persona-surface-hint">Each view uses a parallel scoring run on the same pool. <strong>Tender load</strong> is on every ranked card (up to your <strong>Max results</strong> setting). Switch via <strong>Cost Optimized</strong> and <strong>Reliability Tier</strong> in the top navigation (no re-query).</p>';
       const ptitle = PERSONA_COL_TITLES[key] || key;
       return (
         `${balHint}
@@ -4895,7 +5025,7 @@
         <div class="persona-picks-inner" data-active-persona="${escapeHtml(key)}">
           <div class="persona-picks-grid">
             <div class="persona-picks-top">
-              <div class="matrix-section-label">Top 3 selections</div>
+              <div class="matrix-section-label">${escapeHtml(topLabel)}</div>
               <div class="persona-picks-top__row">${topHtml}</div>
             </div>
             <div class="persona-picks-risk">
@@ -4920,8 +5050,10 @@
           const rank = parseInt(this.getAttribute("data-rank") || "1", 10);
           if (!name || !persona || !lastPersonaMatrix) return;
           const col = lastPersonaMatrix[persona];
-          if (!col || !col.top3) return;
-          const entry = col.top3.find((e) => e.carrier && e.carrier.name === name);
+          if (!col) return;
+          const entry =
+            (col.top3 || []).find((e) => e.carrier && e.carrier.name === name) ||
+            (col.topFull || []).find((e) => e.carrier && e.carrier.name === name);
           if (!entry) return;
           const el = this;
           el.disabled = true;
@@ -5114,7 +5246,7 @@
       };
       const summarizePersona = (col) => ({
         priority: col.priorityLabel,
-        eligible_pool_size: (col.top || []).length,
+        eligible_pool_size: (col.topFull && col.topFull.length ? col.topFull : col.top || []).length,
         benchmark_rate_per_mile: Math.round(col.benchmarkRate * 100) / 100,
         fleet_avg_safety: Math.round(col.fleetAvgSafety * 10) / 10,
         gate_applied: !!col.reliabilityGateApplied,
@@ -5162,19 +5294,16 @@
     ].join("\n");
 
     function streamReasoningAgent(payload, onLine) {
-      // Streams the reasoning agent's response, splitting on newlines and emitting one
+      // Streams Claude's response, splitting on newlines and emitting one
       // line at a time to onLine(text). Returns a promise that resolves on done.
-      //
-      // Backend: Node.js + Express on Render, proxying to Groq (Llama 3.3 70B).
-      // Repo:    https://github.com/BIGMAN7474/Freight-IQ-Agent
-      const REASONING_BACKEND_URL = "https://freight-iq-agent.onrender.com/api/reason";
-
       return new Promise(async (resolve, reject) => {
         try {
-          const response = await fetch(REASONING_BACKEND_URL, {
+          const response = await fetch("https://api.anthropic.com/v1/messages", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              model: "claude-sonnet-4-20250514",
+              max_tokens: 1000,
               stream: true,
               system: REASONING_SYSTEM_PROMPT,
               messages: [
@@ -5282,7 +5411,7 @@
       // Live indicator pill so the audience can see this is a real LLM call
       const liveBadge = document.createElement("span");
       liveBadge.className = "agent-reasoning-live-badge";
-      liveBadge.textContent = "● LIVE — Llama 3.3 70B via Groq";
+      liveBadge.textContent = "● LIVE — Claude Sonnet 4";
       const headingEl = agentReasoningLogEl ? agentReasoningLogEl.querySelector("h3") : null;
       if (headingEl && !headingEl.querySelector(".agent-reasoning-live-badge")) {
         headingEl.appendChild(liveBadge);
@@ -5387,6 +5516,9 @@
         rsb.setAttribute("hidden", "");
       }
       pickupInput.value = formatISODate(addDays(new Date(), 3));
+      if (deliveryInput) {
+        deliveryInput.value = formatISODate(addDays(new Date(), 5));
+      }
       const originEl = document.getElementById("origin");
       const destEl = document.getElementById("destination");
       WSF_ORIGINS.forEach((o) => {
@@ -5419,6 +5551,7 @@
       if (tabRelEl) tabRelEl.addEventListener("click", () => setAppTabSelection("reliability"));
       if (tabRouteEl) tabRouteEl.addEventListener("click", () => setAppTabSelection("route"));
       if (tabSystemEl) tabSystemEl.addEventListener("click", () => setAppTabSelection("system"));
+      if (tabFaqEl) tabFaqEl.addEventListener("click", () => setAppTabSelection("faq", { skipMatrixCheck: true }));
 
       function closeDaHowModal() {
         if (daHowModal) daHowModal.setAttribute("hidden", "");
@@ -5452,6 +5585,10 @@
       const origin = document.getElementById("origin").value;
       const destination = document.getElementById("destination").value;
       const equipment = document.getElementById("equipment").value;
+      const pickupTime = document.getElementById("pickup-time") ? document.getElementById("pickup-time").value : "";
+      const deliveryDate = document.getElementById("delivery") ? document.getElementById("delivery").value : "";
+      const deliveryTime = document.getElementById("delivery-time") ? document.getElementById("delivery-time").value : "";
+      const maxResults = document.getElementById("max-results") ? document.getElementById("max-results").value : "3";
 
       const originState = extractState(origin);
       const destState = extractState(destination);
@@ -5468,6 +5605,10 @@
         destState,
         equipment,
         weatherAlertActive,
+        pickupTime,
+        deliveryDate,
+        deliveryTime,
+        maxResults: parseInt(maxResults, 10) || 3,
       };
 
       findBtn.disabled = true;
@@ -5475,9 +5616,18 @@
       showResultsShell();
       await runLoadingSequence();
 
-      const colCost = scoreCarriers({ equipment, originState, destState, origin, destination, persona: "cost", weatherAlertActive });
-      const colBalanced = scoreCarriers({ equipment, originState, destState, origin, destination, persona: "balanced", weatherAlertActive });
-      const colReliability = scoreCarriers({ equipment, originState, destState, origin, destination, persona: "reliability", weatherAlertActive });
+      const scoreOpts = {
+        equipment,
+        originState,
+        destState,
+        origin,
+        destination,
+        weatherAlertActive,
+        maxResults,
+      };
+      const colCost = scoreCarriers({ ...scoreOpts, persona: "cost" });
+      const colBalanced = scoreCarriers({ ...scoreOpts, persona: "balanced" });
+      const colReliability = scoreCarriers({ ...scoreOpts, persona: "reliability" });
       const matrix = {
         cost: colCost,
         balanced: colBalanced,
