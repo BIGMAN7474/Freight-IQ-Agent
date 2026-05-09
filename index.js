@@ -1,7 +1,7 @@
-// FreightIQ Backend — Reasoning Agent Proxy + Tender History API
-// Forwards reasoning requests to Groq's API (Llama 3.3 70B) with auth, and
-// persists tender decisions to a Supabase Postgres database.
-// All secrets are held as env vars — never exposed to the browser.
+// FreightIQ Backend — Reasoning Agent + Tender History + FMCSA Carrier Lookup
+// Forwards reasoning requests to Groq's API (Llama 3.3 70B), persists tender
+// decisions to Supabase Postgres, and proxies real-time carrier safety lookups
+// through FMCSA's QCMobile API. All secrets are held as env vars.
 const express = require("express");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -18,10 +18,6 @@ app.use((req, res, next) => {
 });
 
 // ---- Supabase client -------------------------------------------------------
-// We use the service_role key here (server-side only). It bypasses Row Level
-// Security, which is what we want — the Express service is the trusted boundary.
-// If the env vars aren't set, we set supabase to null and let the tender
-// endpoints return a clear error instead of crashing the whole service.
 let supabase = null;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
@@ -42,14 +38,100 @@ function requireSupabase(res) {
   return true;
 }
 
+// ---- FMCSA in-memory cache -------------------------------------------------
+// FMCSA carrier records change rarely (safety reviews are infrequent); a 24-hour
+// cache is conservative and keeps us well under any rate limit. The cache is
+// per-process — when Render's free tier sleeps and wakes, the cache resets,
+// which is fine for a low-traffic demo.
+const FMCSA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const fmcsaCache = new Map(); // dot -> { fetchedAt, data }
+
+async function fetchFmcsaCarrier(dot) {
+  const cached = fmcsaCache.get(dot);
+  if (cached && Date.now() - cached.fetchedAt < FMCSA_CACHE_TTL_MS) {
+    return { source: "cache", data: cached.data, fetchedAt: cached.fetchedAt };
+  }
+  const webKey = process.env.FMCSA_WEBKEY;
+  if (!webKey) {
+    throw new Error("FMCSA_WEBKEY not configured on server");
+  }
+  // Pull both the carrier record and the BASICs (CSA scores) in parallel.
+  const carrierUrl = `https://mobile.fmcsa.dot.gov/qc/services/carriers/${encodeURIComponent(dot)}?webKey=${encodeURIComponent(webKey)}`;
+  const basicsUrl = `https://mobile.fmcsa.dot.gov/qc/services/carriers/${encodeURIComponent(dot)}/basics?webKey=${encodeURIComponent(webKey)}`;
+  const [carrierResp, basicsResp] = await Promise.all([
+    fetch(carrierUrl).then((r) => r.json()).catch(() => null),
+    fetch(basicsUrl).then((r) => r.json()).catch(() => null),
+  ]);
+  if (!carrierResp || !carrierResp.content || !carrierResp.content.carrier) {
+    throw new Error("FMCSA returned no carrier record for DOT " + dot);
+  }
+  const c = carrierResp.content.carrier;
+  // Normalize FMCSA's letter codes into the shape our HTML expects.
+  const ratingLetterToLabel = { S: "Satisfactory", C: "Conditional", U: "Unsatisfactory" };
+  const safetyRating = ratingLetterToLabel[c.safetyRating] || (c.safetyRating ? c.safetyRating : "Unrated");
+  const operatingStatus = c.allowedToOperate === "Y" ? "Active" : "Out of Service";
+  const insuranceOnFile = !!(c.bipdInsuranceOnFile && Number(c.bipdInsuranceOnFile) > 0);
+  // FMCSA doesn't surface insurance expiration in this endpoint; we leave null.
+  const fmcsa = {
+    safetyRating,
+    ratingDate: c.safetyRatingDate || null,
+    operatingStatus,
+    insuranceOnFile,
+    insuranceExpires: null,
+  };
+  // CSA BASICs: response is an array of BASIC objects with measure + alert flag.
+  // FMCSA exposes Unsafe Driving, HOS Compliance (called "Hours-of-Service"),
+  // Driver Fitness, Controlled Substances, Vehicle Maintenance. We map to the
+  // same shape our HTML's mock CSA uses.
+  const csa = {
+    unsafeDriving:    { measure: null, alert: false },
+    hosCompliance:    { measure: null, alert: false },
+    driverFitness:    { measure: null, alert: false },
+    controlledSubs:   { measure: null, alert: false },
+    vehicleMaint:     { measure: null, alert: false },
+    crashIndicator:   { measure: null, alert: false },
+  };
+  if (basicsResp && basicsResp.content && Array.isArray(basicsResp.content)) {
+    for (const item of basicsResp.content) {
+      const basic = item && item.basic;
+      if (!basic) continue;
+      const id = (basic.basicsType || "").toLowerCase();
+      const alert = basic.basicsAlertIndicator === "Y";
+      const measure = basic.basicsPercentile != null ? Number(basic.basicsPercentile) : null;
+      if (id.includes("unsafe")) csa.unsafeDriving = { measure, alert };
+      else if (id.includes("fatigued") || id.includes("hours")) csa.hosCompliance = { measure, alert };
+      else if (id.includes("driver fit")) csa.driverFitness = { measure, alert };
+      else if (id.includes("controlled") || id.includes("substance")) csa.controlledSubs = { measure, alert };
+      else if (id.includes("vehicle")) csa.vehicleMaint = { measure, alert };
+      else if (id.includes("crash")) csa.crashIndicator = { measure, alert };
+    }
+  }
+  const result = {
+    dotNumber: Number(dot),
+    legalName: c.legalName || null,
+    dbaName: c.dbaName || null,
+    physicalState: c.phyState || null,
+    physicalCity: c.phyCity || null,
+    totalPowerUnits: c.totalPowerUnits != null ? Number(c.totalPowerUnits) : null,
+    totalDrivers: c.totalDrivers != null ? Number(c.totalDrivers) : null,
+    fmcsa,
+    csa,
+    // Echo the raw FMCSA payload so callers can dig deeper if needed
+    _raw: { carrier: c, basics: basicsResp ? basicsResp.content : null },
+  };
+  fmcsaCache.set(dot, { fetchedAt: Date.now(), data: result });
+  return { source: "live", data: result, fetchedAt: Date.now() };
+}
+
 // ---- Health check ----------------------------------------------------------
 app.get("/", (req, res) => {
   res.json({
-    service: "FreightIQ Reasoning Agent + Tender History API",
+    service: "FreightIQ Reasoning Agent + Tender History + FMCSA Carrier Lookup",
     model: "llama-3.3-70b-versatile (Groq)",
     status: "online",
     supabase: supabase ? "configured" : "not configured",
-    endpoints: ["POST /api/reason", "POST /api/tender", "GET /api/tender-history"],
+    fmcsa: process.env.FMCSA_WEBKEY ? "configured" : "not configured",
+    endpoints: ["POST /api/reason", "POST /api/tender", "GET /api/tender-history", "GET /api/carrier/:dot"],
   });
 });
 
@@ -126,8 +208,6 @@ app.post("/api/reason", async (req, res) => {
 });
 
 // ---- Tender history: write -------------------------------------------------
-// Writes a single tender decision to the tender_history table. The browser
-// posts a JSON body matching the table schema; we map fields and insert.
 app.post("/api/tender", async (req, res) => {
   if (!requireSupabase(res)) return;
   const body = req.body || {};
@@ -177,8 +257,6 @@ app.post("/api/tender", async (req, res) => {
 });
 
 // ---- Tender history: read --------------------------------------------------
-// Returns recent tenders. Supports ?limit=N (1..500, default 50) and
-// ?carrier=NAME (substring match, case-insensitive).
 app.get("/api/tender-history", async (req, res) => {
   if (!requireSupabase(res)) return;
   const limit = Math.max(1, Math.min(500, parseInt(req.query.limit, 10) || 50));
@@ -201,6 +279,28 @@ app.get("/api/tender-history", async (req, res) => {
   } catch (err) {
     console.error("Tender query exception:", err);
     res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- FMCSA carrier lookup --------------------------------------------------
+// Real-time federal safety data by DOT number. Cached in-memory for 24 hours.
+// Returns the same fmcsa+csa shape the HTML's wsfCarrierGate expects.
+app.get("/api/carrier/:dot", async (req, res) => {
+  const dot = String(req.params.dot || "").trim();
+  if (!/^\d{3,8}$/.test(dot)) {
+    return res.status(400).json({ error: "Invalid DOT number; expected 3-8 digits" });
+  }
+  try {
+    const result = await fetchFmcsaCarrier(dot);
+    res.json({
+      ok: true,
+      source: result.source,
+      fetched_at: new Date(result.fetchedAt).toISOString(),
+      carrier: result.data,
+    });
+  } catch (err) {
+    console.error("FMCSA fetch error:", err);
+    res.status(502).json({ error: String(err.message || err) });
   }
 });
 
