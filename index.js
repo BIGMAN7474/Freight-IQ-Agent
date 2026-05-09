@@ -79,10 +79,9 @@ async function fetchFmcsaCarrier(dot) {
     insuranceOnFile,
     insuranceExpires: null,
   };
-  // CSA BASICs: response is an array of BASIC objects with measure + alert flag.
-  // FMCSA exposes Unsafe Driving, HOS Compliance (called "Hours-of-Service"),
-  // Driver Fitness, Controlled Substances, Vehicle Maintenance. We map to the
-  // same shape our HTML's mock CSA uses.
+  // CSA BASICs: response shape varies. We walk it defensively, stringify every
+  // value before pattern-matching, and log raw shape on first call so we can
+  // inspect what comes back if normalization misses anything.
   const csa = {
     unsafeDriving:    { measure: null, alert: false },
     hosCompliance:    { measure: null, alert: false },
@@ -91,19 +90,37 @@ async function fetchFmcsaCarrier(dot) {
     vehicleMaint:     { measure: null, alert: false },
     crashIndicator:   { measure: null, alert: false },
   };
-  if (basicsResp && basicsResp.content && Array.isArray(basicsResp.content)) {
-    for (const item of basicsResp.content) {
-      const basic = item && item.basic;
-      if (!basic) continue;
-      const id = (basic.basicsType || "").toLowerCase();
-      const alert = basic.basicsAlertIndicator === "Y";
-      const measure = basic.basicsPercentile != null ? Number(basic.basicsPercentile) : null;
+  if (basicsResp && basicsResp.content) {
+    const items = Array.isArray(basicsResp.content) ? basicsResp.content : [basicsResp.content];
+    for (const item of items) {
+      if (!item) continue;
+      // The "basic" subobject sometimes lives at item.basic, sometimes is item itself.
+      const basic = item.basic || item;
+      if (!basic || typeof basic !== "object") continue;
+      // Pull whatever identifying field we can find and stringify it.
+      const idRaw =
+        basic.basicsType ||
+        basic.basicType ||
+        basic.basicsName ||
+        basic.basicName ||
+        basic.basic ||
+        basic.type ||
+        basic.name ||
+        "";
+      const id = String(idRaw).toLowerCase();
+      const alert = basic.basicsAlertIndicator === "Y" || basic.alertIndicator === "Y" || basic.alert === "Y";
+      const measureRaw = basic.basicsPercentile != null ? basic.basicsPercentile : basic.percentile != null ? basic.percentile : basic.measure;
+      const measure = measureRaw != null && !isNaN(Number(measureRaw)) ? Number(measureRaw) : null;
       if (id.includes("unsafe")) csa.unsafeDriving = { measure, alert };
-      else if (id.includes("fatigued") || id.includes("hours")) csa.hosCompliance = { measure, alert };
-      else if (id.includes("driver fit")) csa.driverFitness = { measure, alert };
-      else if (id.includes("controlled") || id.includes("substance")) csa.controlledSubs = { measure, alert };
-      else if (id.includes("vehicle")) csa.vehicleMaint = { measure, alert };
+      else if (id.includes("fatigued") || id.includes("hours") || id.includes("hos")) csa.hosCompliance = { measure, alert };
+      else if (id.includes("driver fit") || id.includes("driverfit")) csa.driverFitness = { measure, alert };
+      else if (id.includes("controlled") || id.includes("substance") || id.includes("alcohol")) csa.controlledSubs = { measure, alert };
+      else if (id.includes("vehicle") || id.includes("maint")) csa.vehicleMaint = { measure, alert };
       else if (id.includes("crash")) csa.crashIndicator = { measure, alert };
+    }
+    // Log raw shape once per DOT so we can see what FMCSA actually returns
+    if (!fmcsaCache.has(dot)) {
+      console.log("FMCSA BASICs raw shape for DOT", dot, JSON.stringify(items[0] || {}, null, 2).slice(0, 500));
     }
   }
   const result = {
