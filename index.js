@@ -79,9 +79,12 @@ async function fetchFmcsaCarrier(dot) {
     insuranceOnFile,
     insuranceExpires: null,
   };
-  // CSA BASICs: response shape varies. We walk it defensively, stringify every
-  // value before pattern-matching, and log raw shape on first call so we can
-  // inspect what comes back if normalization misses anything.
+  // CSA BASICs.
+  // FMCSA puts the human-readable BASIC name in `basicsCode` (e.g. "Unsafe
+  // Driving", "HOS Compliance", "Driver Fitness"). `basicsType` is sometimes
+  // a nested object, so we explicitly guard against calling .toLowerCase on it.
+  // FMCSA also returns "Not Public" for property carriers' confidential BASICs
+  // and numeric strings for public ones — we coerce "Not Public" to null.
   const csa = {
     unsafeDriving:    { measure: null, alert: false },
     hosCompliance:    { measure: null, alert: false },
@@ -94,31 +97,33 @@ async function fetchFmcsaCarrier(dot) {
     const items = Array.isArray(basicsResp.content) ? basicsResp.content : [basicsResp.content];
     for (const item of items) {
       if (!item) continue;
-      // The "basic" subobject sometimes lives at item.basic, sometimes is item itself.
       const basic = item.basic || item;
       if (!basic || typeof basic !== "object") continue;
-      // Pull whatever identifying field we can find and stringify it.
       const idRaw =
-        basic.basicsType ||
-        basic.basicType ||
+        basic.basicsCode ||
+        basic.basicCode ||
+        (typeof basic.basicsType === "string" ? basic.basicsType : null) ||
+        (basic.basicsType && basic.basicsType.basicsCode) ||
         basic.basicsName ||
         basic.basicName ||
-        basic.basic ||
         basic.type ||
         basic.name ||
         "";
       const id = String(idRaw).toLowerCase();
       const alert = basic.basicsAlertIndicator === "Y" || basic.alertIndicator === "Y" || basic.alert === "Y";
       const measureRaw = basic.basicsPercentile != null ? basic.basicsPercentile : basic.percentile != null ? basic.percentile : basic.measure;
-      const measure = measureRaw != null && !isNaN(Number(measureRaw)) ? Number(measureRaw) : null;
+      let measure = null;
+      if (measureRaw != null && String(measureRaw).toLowerCase() !== "not public") {
+        const n = Number(measureRaw);
+        if (!isNaN(n)) measure = n;
+      }
       if (id.includes("unsafe")) csa.unsafeDriving = { measure, alert };
       else if (id.includes("fatigued") || id.includes("hours") || id.includes("hos")) csa.hosCompliance = { measure, alert };
       else if (id.includes("driver fit") || id.includes("driverfit")) csa.driverFitness = { measure, alert };
-      else if (id.includes("controlled") || id.includes("substance") || id.includes("alcohol")) csa.controlledSubs = { measure, alert };
+      else if (id.includes("controlled") || id.includes("substance") || id.includes("alcohol") || id.includes("drugs")) csa.controlledSubs = { measure, alert };
       else if (id.includes("vehicle") || id.includes("maint")) csa.vehicleMaint = { measure, alert };
       else if (id.includes("crash")) csa.crashIndicator = { measure, alert };
     }
-    // Log raw shape once per DOT so we can see what FMCSA actually returns
     if (!fmcsaCache.has(dot)) {
       console.log("FMCSA BASICs raw shape for DOT", dot, JSON.stringify(items[0] || {}, null, 2).slice(0, 500));
     }
@@ -133,7 +138,6 @@ async function fetchFmcsaCarrier(dot) {
     totalDrivers: c.totalDrivers != null ? Number(c.totalDrivers) : null,
     fmcsa,
     csa,
-    // Echo the raw FMCSA payload so callers can dig deeper if needed
     _raw: { carrier: c, basics: basicsResp ? basicsResp.content : null },
   };
   fmcsaCache.set(dot, { fetchedAt: Date.now(), data: result });
@@ -152,7 +156,7 @@ app.get("/", (req, res) => {
   });
 });
 
-// ---- Reasoning endpoint (unchanged) ----------------------------------------
+// ---- Reasoning endpoint ----------------------------------------------------
 app.post("/api/reason", async (req, res) => {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
