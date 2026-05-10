@@ -71,7 +71,6 @@ async function fetchFmcsaCarrier(dot) {
   const safetyRating = ratingLetterToLabel[c.safetyRating] || (c.safetyRating ? c.safetyRating : "Unrated");
   const operatingStatus = c.allowedToOperate === "Y" ? "Active" : "Out of Service";
   const insuranceOnFile = !!(c.bipdInsuranceOnFile && Number(c.bipdInsuranceOnFile) > 0);
-  // FMCSA doesn't surface insurance expiration in this endpoint; we leave null.
   const fmcsa = {
     safetyRating,
     ratingDate: c.safetyRatingDate || null,
@@ -80,11 +79,11 @@ async function fetchFmcsaCarrier(dot) {
     insuranceExpires: null,
   };
   // CSA BASICs.
-  // FMCSA puts the human-readable BASIC name in `basicsCode` (e.g. "Unsafe
-  // Driving", "HOS Compliance", "Driver Fitness"). `basicsType` is sometimes
-  // a nested object, so we explicitly guard against calling .toLowerCase on it.
-  // FMCSA also returns "Not Public" for property carriers' confidential BASICs
-  // and numeric strings for public ones — we coerce "Not Public" to null.
+  // FMCSA puts the human-readable BASIC name in `basic.basicsType.basicsCode`
+  // (a nested object). Percentile is in `basicsPercentile` but that's "Not
+  // Public" for property carriers — for those, the raw measure is in
+  // `measureValue` at the same level. Alert flag is `exceededFMCSAInterventionThreshold`
+  // returned as "1" (alert) or "-1" (no alert).
   const csa = {
     unsafeDriving:    { measure: null, alert: false },
     hosCompliance:    { measure: null, alert: false },
@@ -104,18 +103,31 @@ async function fetchFmcsaCarrier(dot) {
         basic.basicCode ||
         (typeof basic.basicsType === "string" ? basic.basicsType : null) ||
         (basic.basicsType && basic.basicsType.basicsCode) ||
+        (basic.basicsType && basic.basicsType.basicsShortDesc) ||
         basic.basicsName ||
         basic.basicName ||
         basic.type ||
         basic.name ||
         "";
       const id = String(idRaw).toLowerCase();
-      const alert = basic.basicsAlertIndicator === "Y" || basic.alertIndicator === "Y" || basic.alert === "Y";
-      const measureRaw = basic.basicsPercentile != null ? basic.basicsPercentile : basic.percentile != null ? basic.percentile : basic.measure;
+      // Alert: the field FMCSA actually uses is `exceededFMCSAInterventionThreshold`,
+      // returned as "1" (alert) or "-1" (no alert).
+      const alert =
+        String(basic.exceededFMCSAInterventionThreshold || "").trim() === "1" ||
+        basic.basicsAlertIndicator === "Y" ||
+        basic.alertIndicator === "Y" ||
+        basic.alert === "Y";
+      // Measure: prefer percentile (directly comparable to FMCSA thresholds),
+      // fall back to raw measureValue if percentile is "Not Public" (confidential
+      // for property carriers but the raw value is still disclosed).
       let measure = null;
-      if (measureRaw != null && String(measureRaw).toLowerCase() !== "not public") {
-        const n = Number(measureRaw);
-        if (!isNaN(n)) measure = n;
+      const candidates = [basic.basicsPercentile, basic.percentile, basic.measureValue, basic.measure];
+      for (const cand of candidates) {
+        if (cand == null) continue;
+        const s = String(cand).toLowerCase();
+        if (s === "not public" || s === "") continue;
+        const n = Number(cand);
+        if (!isNaN(n)) { measure = n; break; }
       }
       if (id.includes("unsafe")) csa.unsafeDriving = { measure, alert };
       else if (id.includes("fatigued") || id.includes("hours") || id.includes("hos")) csa.hosCompliance = { measure, alert };
