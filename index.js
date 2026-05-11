@@ -1,7 +1,10 @@
-// FreightIQ Backend — Reasoning Agent + Tender History + FMCSA Carrier Lookup
+// FreightIQ Backend — Reasoning Agent + Tender History + FMCSA Carrier Lookup + Lane Weather Risk
 // Forwards reasoning requests to Groq's API (Llama 3.3 70B), persists tender
-// decisions to Supabase Postgres, and proxies real-time carrier safety lookups
-// through FMCSA's QCMobile API. All secrets are held as env vars.
+// decisions to Supabase Postgres, proxies real-time carrier safety lookups
+// through FMCSA's QCMobile API, and exposes the autonomously-observed NOAA
+// weather risk per WSF lane state from the lane_weather_risk Supabase table
+// (refreshed every 15 min by the freightiq-fire-noaa + freightiq-refresh-weather-risk
+// pg_cron jobs).
 const express = require("express");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -39,12 +42,8 @@ function requireSupabase(res) {
 }
 
 // ---- FMCSA in-memory cache -------------------------------------------------
-// FMCSA carrier records change rarely (safety reviews are infrequent); a 24-hour
-// cache is conservative and keeps us well under any rate limit. The cache is
-// per-process — when Render's free tier sleeps and wakes, the cache resets,
-// which is fine for a low-traffic demo.
 const FMCSA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const fmcsaCache = new Map(); // dot -> { fetchedAt, data }
+const fmcsaCache = new Map();
 
 async function fetchFmcsaCarrier(dot) {
   const cached = fmcsaCache.get(dot);
@@ -55,7 +54,6 @@ async function fetchFmcsaCarrier(dot) {
   if (!webKey) {
     throw new Error("FMCSA_WEBKEY not configured on server");
   }
-  // Pull both the carrier record and the BASICs (CSA scores) in parallel.
   const carrierUrl = `https://mobile.fmcsa.dot.gov/qc/services/carriers/${encodeURIComponent(dot)}?webKey=${encodeURIComponent(webKey)}`;
   const basicsUrl = `https://mobile.fmcsa.dot.gov/qc/services/carriers/${encodeURIComponent(dot)}/basics?webKey=${encodeURIComponent(webKey)}`;
   const [carrierResp, basicsResp] = await Promise.all([
@@ -66,7 +64,6 @@ async function fetchFmcsaCarrier(dot) {
     throw new Error("FMCSA returned no carrier record for DOT " + dot);
   }
   const c = carrierResp.content.carrier;
-  // Normalize FMCSA's letter codes into the shape our HTML expects.
   const ratingLetterToLabel = { S: "Satisfactory", C: "Conditional", U: "Unsatisfactory" };
   const safetyRating = ratingLetterToLabel[c.safetyRating] || (c.safetyRating ? c.safetyRating : "Unrated");
   const operatingStatus = c.allowedToOperate === "Y" ? "Active" : "Out of Service";
@@ -78,12 +75,6 @@ async function fetchFmcsaCarrier(dot) {
     insuranceOnFile,
     insuranceExpires: null,
   };
-  // CSA BASICs.
-  // FMCSA puts the human-readable BASIC name in `basic.basicsType.basicsCode`
-  // (a nested object). Percentile is in `basicsPercentile` but that's "Not
-  // Public" for property carriers — for those, the raw measure is in
-  // `measureValue` at the same level. Alert flag is `exceededFMCSAInterventionThreshold`
-  // returned as "1" (alert) or "-1" (no alert).
   const csa = {
     unsafeDriving:    { measure: null, alert: false },
     hosCompliance:    { measure: null, alert: false },
@@ -110,16 +101,11 @@ async function fetchFmcsaCarrier(dot) {
         basic.name ||
         "";
       const id = String(idRaw).toLowerCase();
-      // Alert: the field FMCSA actually uses is `exceededFMCSAInterventionThreshold`,
-      // returned as "1" (alert) or "-1" (no alert).
       const alert =
         String(basic.exceededFMCSAInterventionThreshold || "").trim() === "1" ||
         basic.basicsAlertIndicator === "Y" ||
         basic.alertIndicator === "Y" ||
         basic.alert === "Y";
-      // Measure: prefer percentile (directly comparable to FMCSA thresholds),
-      // fall back to raw measureValue if percentile is "Not Public" (confidential
-      // for property carriers but the raw value is still disclosed).
       let measure = null;
       const candidates = [basic.basicsPercentile, basic.percentile, basic.measureValue, basic.measure];
       for (const cand of candidates) {
@@ -159,12 +145,18 @@ async function fetchFmcsaCarrier(dot) {
 // ---- Health check ----------------------------------------------------------
 app.get("/", (req, res) => {
   res.json({
-    service: "FreightIQ Reasoning Agent + Tender History + FMCSA Carrier Lookup",
+    service: "FreightIQ Reasoning Agent + Tender History + FMCSA Carrier Lookup + Lane Weather Risk",
     model: "llama-3.3-70b-versatile (Groq)",
     status: "online",
     supabase: supabase ? "configured" : "not configured",
     fmcsa: process.env.FMCSA_WEBKEY ? "configured" : "not configured",
-    endpoints: ["POST /api/reason", "POST /api/tender", "GET /api/tender-history", "GET /api/carrier/:dot"],
+    endpoints: [
+      "POST /api/reason",
+      "POST /api/tender",
+      "GET /api/tender-history",
+      "GET /api/carrier/:dot",
+      "GET /api/lane-risk",
+    ],
   });
 });
 
@@ -316,8 +308,6 @@ app.get("/api/tender-history", async (req, res) => {
 });
 
 // ---- FMCSA carrier lookup --------------------------------------------------
-// Real-time federal safety data by DOT number. Cached in-memory for 24 hours.
-// Returns the same fmcsa+csa shape the HTML's wsfCarrierGate expects.
 app.get("/api/carrier/:dot", async (req, res) => {
   const dot = String(req.params.dot || "").trim();
   if (!/^\d{3,8}$/.test(dot)) {
@@ -334,6 +324,51 @@ app.get("/api/carrier/:dot", async (req, res) => {
   } catch (err) {
     console.error("FMCSA fetch error:", err);
     res.status(502).json({ error: String(err.message || err) });
+  }
+});
+
+// ---- Lane weather risk -----------------------------------------------------
+// Returns the most recent observed risk per WSF lane state from the
+// lane_weather_risk Supabase table, which is autonomously refreshed every
+// 15 min by the pg_cron-scheduled freightiq-fire-noaa + freightiq-refresh-weather-risk
+// functions against NOAA's federal active-alerts API. Closes the audit's
+// "agent is a reporter, not an observer" gap.
+app.get("/api/lane-risk", async (req, res) => {
+  if (!requireSupabase(res)) return;
+  try {
+    // For each state, grab only the latest observation. Postgres "distinct on"
+    // is the cleanest way; the lwr_state_observed_idx index makes it fast.
+    const { data, error } = await supabase
+      .from("lane_weather_risk")
+      .select("state_code, severity, alert_count, highest_severity_event, observed_at")
+      .order("observed_at", { ascending: false })
+      .limit(500);
+    if (error) {
+      console.error("Lane risk query error:", error);
+      return res.status(500).json({ error: error.message });
+    }
+    // Reduce to the most recent row per state_code (client-side dedupe since
+    // Supabase JS doesn't natively expose `distinct on`).
+    const latestByState = new Map();
+    for (const row of data || []) {
+      if (!latestByState.has(row.state_code)) {
+        latestByState.set(row.state_code, row);
+      }
+    }
+    const states = Array.from(latestByState.values());
+    // Find the most recent observation across all states as a freshness signal.
+    const mostRecent = states.reduce((max, s) => {
+      return !max || (s.observed_at && s.observed_at > max) ? s.observed_at : max;
+    }, null);
+    res.json({
+      ok: true,
+      observed_at: mostRecent,
+      states,
+      source: "NOAA api.weather.gov (autonomous pg_cron observer, 15-min interval)",
+    });
+  } catch (err) {
+    console.error("Lane risk query exception:", err);
+    res.status(500).json({ error: String(err) });
   }
 });
 
