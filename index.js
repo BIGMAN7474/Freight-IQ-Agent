@@ -1,10 +1,9 @@
-// FreightIQ Backend — Reasoning Agent + Tender History + FMCSA Carrier Lookup + Lane Weather Risk
+// FreightIQ Backend — Reasoning Agent + Tender History + FMCSA Carrier Lookup + Lane Weather Risk + Audit Verification
 // Forwards reasoning requests to Groq's API (Llama 3.3 70B), persists tender
 // decisions to Supabase Postgres, proxies real-time carrier safety lookups
-// through FMCSA's QCMobile API, and exposes the autonomously-observed NOAA
-// weather risk per WSF lane state from the lane_weather_risk Supabase table
-// (refreshed every 15 min by the freightiq-fire-noaa + freightiq-refresh-weather-risk
-// pg_cron jobs).
+// through FMCSA's QCMobile API, exposes the autonomously-observed NOAA
+// weather risk per WSF lane state, and exposes a tamper-evident audit chain
+// verifier that walks the SHA-256 hash chain on tender_history rows.
 const express = require("express");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -145,7 +144,7 @@ async function fetchFmcsaCarrier(dot) {
 // ---- Health check ----------------------------------------------------------
 app.get("/", (req, res) => {
   res.json({
-    service: "FreightIQ Reasoning Agent + Tender History + FMCSA Carrier Lookup + Lane Weather Risk",
+    service: "FreightIQ Reasoning Agent + Tender History + FMCSA Carrier Lookup + Lane Weather Risk + Audit Verification",
     model: "llama-3.3-70b-versatile (Groq)",
     status: "online",
     supabase: supabase ? "configured" : "not configured",
@@ -156,6 +155,7 @@ app.get("/", (req, res) => {
       "GET /api/tender-history",
       "GET /api/carrier/:dot",
       "GET /api/lane-risk",
+      "GET /api/audit-verify",
     ],
   });
 });
@@ -336,8 +336,6 @@ app.get("/api/carrier/:dot", async (req, res) => {
 app.get("/api/lane-risk", async (req, res) => {
   if (!requireSupabase(res)) return;
   try {
-    // For each state, grab only the latest observation. Postgres "distinct on"
-    // is the cleanest way; the lwr_state_observed_idx index makes it fast.
     const { data, error } = await supabase
       .from("lane_weather_risk")
       .select("state_code, severity, alert_count, highest_severity_event, observed_at")
@@ -347,8 +345,6 @@ app.get("/api/lane-risk", async (req, res) => {
       console.error("Lane risk query error:", error);
       return res.status(500).json({ error: error.message });
     }
-    // Reduce to the most recent row per state_code (client-side dedupe since
-    // Supabase JS doesn't natively expose `distinct on`).
     const latestByState = new Map();
     for (const row of data || []) {
       if (!latestByState.has(row.state_code)) {
@@ -356,7 +352,6 @@ app.get("/api/lane-risk", async (req, res) => {
       }
     }
     const states = Array.from(latestByState.values());
-    // Find the most recent observation across all states as a freshness signal.
     const mostRecent = states.reduce((max, s) => {
       return !max || (s.observed_at && s.observed_at > max) ? s.observed_at : max;
     }, null);
@@ -368,6 +363,38 @@ app.get("/api/lane-risk", async (req, res) => {
     });
   } catch (err) {
     console.error("Lane risk query exception:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Tamper-evident audit verification -------------------------------------
+// Walks the SHA-256 hash chain of tender_history rows and returns per-row
+// validity. Each row's row_hash includes the previous row's hash, so any
+// after-the-fact modification of a tender record breaks the chain at that
+// row and every subsequent row — and verify_tender_chain() detects it.
+// Closes the audit-defensibility gap that "trust us, we don't change rows"
+// couldn't close on its own.
+app.get("/api/audit-verify", async (req, res) => {
+  if (!requireSupabase(res)) return;
+  try {
+    const { data, error } = await supabase.rpc("verify_tender_chain");
+    if (error) {
+      console.error("Audit verify error:", error);
+      return res.status(500).json({ error: error.message });
+    }
+    const rows = data || [];
+    const tampered = rows.filter((r) => !r.valid);
+    res.json({
+      ok: true,
+      total_rows: rows.length,
+      valid_count: rows.filter((r) => r.valid).length,
+      tampered_count: tampered.length,
+      chain_intact: tampered.length === 0,
+      tampered_ids: tampered.map((r) => r.id),
+      checked_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error("Audit verify exception:", err);
     res.status(500).json({ error: String(err) });
   }
 });
