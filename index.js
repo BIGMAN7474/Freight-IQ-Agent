@@ -1,10 +1,11 @@
-// FreightIQ Backend — Reasoning Agent + Tender History + FMCSA Carrier Lookup + Lane Weather Risk + Audit Verification + Fuel Index
+// FreightIQ Backend — Reasoning Agent + Tender History + FMCSA Carrier Lookup + Lane Weather Risk + Fuel Index + Audit Verification
 // Forwards reasoning requests to Groq's API (Llama 3.3 70B), persists tender
 // decisions to Supabase Postgres, proxies real-time carrier safety lookups
 // through FMCSA's QCMobile API, exposes the autonomously-observed NOAA
 // weather risk per lane state, exposes the autonomously-observed EIA
-// weekly diesel price + computed fuel surcharge, and exposes a tamper-evident
-// audit chain verifier that walks the SHA-256 hash chain on tender_history rows.
+// weekly diesel price (national + per-region/PADD) + computed fuel
+// surcharge, and exposes a tamper-evident audit chain verifier that walks
+// the SHA-256 hash chain on tender_history rows.
 const express = require("express");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -157,6 +158,7 @@ app.get("/", (req, res) => {
       "GET /api/carrier/:dot",
       "GET /api/lane-risk",
       "GET /api/fuel-index",
+      "GET /api/fuel-index/regions",
       "GET /api/audit-verify",
     ],
   });
@@ -370,7 +372,7 @@ app.get("/api/lane-risk", async (req, res) => {
   }
 });
 
-// ---- Fuel index (weekly diesel + computed FSC) -----------------------------
+// ---- Fuel index (national weekly diesel + computed FSC) --------------------
 // Returns the most recent weekly U.S. No. 2 diesel retail price from the
 // fuel_index Supabase table, which is autonomously refreshed every Monday
 // by the pg_cron-scheduled fire_eia_diesel_request + refresh_fuel_index
@@ -406,6 +408,60 @@ app.get("/api/fuel-index", async (req, res) => {
     });
   } catch (err) {
     console.error("Fuel index query exception:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Fuel index regional (PADD + California) -------------------------------
+// Returns the most recent week's per-region diesel prices from
+// fuel_index_regional. The frontend uses these for origin/destination lane
+// fuel context. Each row is a region observed by EIA: California (SCA), PADDs
+// 1-5 and their sub-regions (R10, R1X, R1Y, R1Z, R20, R30, R40, R50, R5XCA),
+// and the national rollup (NUS). Refreshed weekly by a pg_cron job mirroring
+// the national observer.
+app.get("/api/fuel-index/regions", async (req, res) => {
+  if (!requireSupabase(res)) return;
+  try {
+    const { data: weekRow, error: weekErr } = await supabase
+      .from("fuel_index_regional")
+      .select("week_of")
+      .order("week_of", { ascending: false })
+      .limit(1);
+    if (weekErr) {
+      console.error("Fuel regional week query error:", weekErr);
+      return res.status(500).json({ error: weekErr.message });
+    }
+    if (!weekRow || weekRow.length === 0) {
+      return res.status(404).json({ error: "no regional fuel data yet" });
+    }
+    const latestWeek = weekRow[0].week_of;
+
+    const { data, error } = await supabase
+      .from("fuel_index_regional")
+      .select("duoarea, area_name, diesel_price, base_price, mpg_assumption, fsc_per_mile, observed_at, source")
+      .eq("week_of", latestWeek)
+      .order("diesel_price", { ascending: false });
+    if (error) {
+      console.error("Fuel regional query error:", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json({
+      ok: true,
+      week_of: latestWeek,
+      source: "EIA APIv2 petroleum/pri/gnd (faceted regional, weekly)",
+      regions: (data || []).map((r) => ({
+        duoarea: r.duoarea,
+        area_name: r.area_name,
+        diesel_price: Number(r.diesel_price),
+        base_price: Number(r.base_price),
+        mpg_assumption: Number(r.mpg_assumption),
+        fsc_per_mile: Number(r.fsc_per_mile),
+        observed_at: r.observed_at,
+      })),
+    });
+  } catch (err) {
+    console.error("Fuel regional endpoint error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
