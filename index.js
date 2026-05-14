@@ -1,9 +1,10 @@
-// FreightIQ Backend — Reasoning Agent + Tender History + FMCSA Carrier Lookup + Lane Weather Risk + Audit Verification
+// FreightIQ Backend — Reasoning Agent + Tender History + FMCSA Carrier Lookup + Lane Weather Risk + Audit Verification + Fuel Index
 // Forwards reasoning requests to Groq's API (Llama 3.3 70B), persists tender
 // decisions to Supabase Postgres, proxies real-time carrier safety lookups
 // through FMCSA's QCMobile API, exposes the autonomously-observed NOAA
-// weather risk per WSF lane state, and exposes a tamper-evident audit chain
-// verifier that walks the SHA-256 hash chain on tender_history rows.
+// weather risk per lane state, exposes the autonomously-observed EIA
+// weekly diesel price + computed fuel surcharge, and exposes a tamper-evident
+// audit chain verifier that walks the SHA-256 hash chain on tender_history rows.
 const express = require("express");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -144,7 +145,7 @@ async function fetchFmcsaCarrier(dot) {
 // ---- Health check ----------------------------------------------------------
 app.get("/", (req, res) => {
   res.json({
-    service: "FreightIQ Reasoning Agent + Tender History + FMCSA Carrier Lookup + Lane Weather Risk + Audit Verification",
+    service: "FreightIQ Reasoning Agent + Tender History + FMCSA Carrier Lookup + Lane Weather Risk + Fuel Index + Audit Verification",
     model: "llama-3.3-70b-versatile (Groq)",
     status: "online",
     supabase: supabase ? "configured" : "not configured",
@@ -155,6 +156,7 @@ app.get("/", (req, res) => {
       "GET /api/tender-history",
       "GET /api/carrier/:dot",
       "GET /api/lane-risk",
+      "GET /api/fuel-index",
       "GET /api/audit-verify",
     ],
   });
@@ -328,11 +330,12 @@ app.get("/api/carrier/:dot", async (req, res) => {
 });
 
 // ---- Lane weather risk -----------------------------------------------------
-// Returns the most recent observed risk per WSF lane state from the
+// Returns the most recent observed risk per lane state from the
 // lane_weather_risk Supabase table, which is autonomously refreshed every
-// 15 min by the pg_cron-scheduled freightiq-fire-noaa + freightiq-refresh-weather-risk
-// functions against NOAA's federal active-alerts API. Closes the audit's
-// "agent is a reporter, not an observer" gap.
+// 15 min by the pg_cron-scheduled fire_noaa_request + refresh_lane_weather_risk
+// functions against NOAA's federal active-alerts API across all 48
+// contiguous states. Closes the audit's "agent is a reporter, not an
+// observer" gap.
 app.get("/api/lane-risk", async (req, res) => {
   if (!requireSupabase(res)) return;
   try {
@@ -363,6 +366,46 @@ app.get("/api/lane-risk", async (req, res) => {
     });
   } catch (err) {
     console.error("Lane risk query exception:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Fuel index (weekly diesel + computed FSC) -----------------------------
+// Returns the most recent weekly U.S. No. 2 diesel retail price from the
+// fuel_index Supabase table, which is autonomously refreshed every Monday
+// by the pg_cron-scheduled fire_eia_diesel_request + refresh_fuel_index
+// functions against EIA's federal APIv2 (series EMD_EPD2D_PTE_NUS_DPG).
+// The fsc_per_mile field is a generated column on the table computed as
+// MAX(0, (diesel_price - base_price) / mpg_assumption) with defaults
+// base $1.25/gal and 6.0 mpg — industry-standard FSC formula.
+app.get("/api/fuel-index", async (req, res) => {
+  if (!requireSupabase(res)) return;
+  try {
+    const { data, error } = await supabase
+      .from("fuel_index")
+      .select("week_of, diesel_price, base_price, mpg_assumption, fsc_per_mile, observed_at, source")
+      .order("observed_at", { ascending: false })
+      .limit(1);
+    if (error) {
+      console.error("Fuel index query error:", error);
+      return res.status(500).json({ error: error.message });
+    }
+    if (!data || data.length === 0) {
+      return res.status(404).json({ error: "no fuel_index rows yet" });
+    }
+    const row = data[0];
+    res.json({
+      ok: true,
+      source: row.source,
+      week_of: row.week_of,
+      diesel_price: Number(row.diesel_price),
+      base_price: Number(row.base_price),
+      mpg_assumption: Number(row.mpg_assumption),
+      fsc_per_mile: Number(row.fsc_per_mile),
+      observed_at: row.observed_at,
+    });
+  } catch (err) {
+    console.error("Fuel index query exception:", err);
     res.status(500).json({ error: String(err) });
   }
 });
